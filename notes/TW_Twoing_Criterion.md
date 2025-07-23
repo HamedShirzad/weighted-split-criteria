@@ -170,6 +170,7 @@ def twoing_criterion(y_left, y_right):
 
 
 
+'''
 ## منابع
 - Breiman, L., Friedman, J., Olshen, R., & Stone, C. (1984). Classification and Regression Trees. Chapman & Hall/CRC
 - مقالات مقایسه‌ای معیارهای تقسیم در درخت‌های تصمیم
