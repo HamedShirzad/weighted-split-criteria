@@ -1,0 +1,60 @@
+import numpy as np
+from utils.fn_metric import false_negative
+
+class FNWeightedSplitManager:
+    """
+    مدیریت رأی‌گیری وزنی پویا برای انتخاب بهترین تقسیم (split)
+    معیارها باید signature calculate_score(y_left, y_right) داشته باشند.
+    """
+
+    def __init__(self, criteria_list, positive_label=1, epsilon=1e-5):
+        self.criteria_list = criteria_list
+        self.positive_label = positive_label
+        self.epsilon = epsilon
+
+    def evaluate_all_splits(self, splits):
+        """
+        Evaluates all candidate splits using weighted voting of all provided criteria.
+        splits: لیست تاپل (feature, threshold, y_left, y_right)
+            - y_left و y_right: برچسب‌های واقعی نمونه‌های شاخه چپ/راست هر split
+
+        خروجی: dict برای بهترین تقسیم (feature, threshold,... اطلاعات وزنی)
+        """
+        best_score = -np.inf
+        best_split = None
+
+        for split in splits:
+            feature, threshold, y_left, y_right = split
+
+            score_list = []
+            fn_list = []
+
+            for crit in self.criteria_list:
+                score = crit.calculate_score(y_left, y_right)
+                score_list.append(score)
+
+                fn_left = false_negative(y_left, y_left, self.positive_label)
+                fn_right = false_negative(y_right, y_right, self.positive_label)
+                fn = fn_left + fn_right
+                fn_list.append(fn)
+
+            # وزندهی معکوس با FN (FN کوچک=وزن زیاد؛ نرمال‌سازی)
+            weights = [1.0 / (fn + self.epsilon) for fn in fn_list]
+            weights = np.array(weights)
+            if np.sum(weights) > 0:
+                weights = weights / np.sum(weights)
+
+            weighted_score = float(np.dot(score_list, weights))
+
+            if weighted_score > best_score:
+                best_score = weighted_score
+                best_split = {
+                    "feature": feature,
+                    "threshold": threshold,
+                    "weighted_score": weighted_score,
+                    "weights": weights.tolist(),
+                    "scores": score_list,
+                    "fn_list": fn_list
+                }
+
+        return best_split
