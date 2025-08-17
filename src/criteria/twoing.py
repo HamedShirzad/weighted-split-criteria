@@ -1,5 +1,4 @@
 import numpy as np
-from .base import BaseCriterion
 
 def twoing_criterion(y_left, y_right):
     """
@@ -33,16 +32,3 @@ def twoing_criterion(y_left, y_right):
         p_Rj = np.sum(y_right == c) / n_right
         diff_sum += abs(p_Lj - p_Rj)
     return (p_L * p_R / 4.0) * (diff_sum ** 2)
-
-class TwoingCriterion(BaseCriterion):
-    def __init__(self):
-        super().__init__()
-        self.name = "twoing"
-    def calculate_score(self, y_left, y_right):
-        y_left, y_right = self.validate_input(y_left, y_right)
-        return twoing_criterion(y_left, y_right)
-    def get_description(self):
-        return "Twoing Criterion: تفکیک کلاس‌ها با شاخه‌های متعادل"
-
-input("Press Enter to exit")
-

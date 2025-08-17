@@ -25,15 +25,15 @@ def intrinsic_value(branches):
             iv -= p * np.log2(p)
     return iv
 
-def gain_ratio(y_parent, branches):
+def gain_ratio(y_left, y_right):
+    branches = [y_left, y_right]
+    y_parent = np.concatenate(branches)
     ig = information_gain(y_parent, branches)
     iv = intrinsic_value(branches)
     if iv == 0:
         return 0.
     return ig / iv
 
-class GainRatioCriterion:
-    def calculate_score(self, y_left, y_right):
-        branches = [y_left, y_right]  # هر کدام آرایه‌ای از لیبل‌هاست
-        y_parent = np.concatenate(branches)
-        return gain_ratio(y_parent, branches)
+# این تابع رو به عنوان معیار تقسیم به مدل custom-tree-classifier بده
+def gain_ratio_criterion(y_left, y_right):
+    return gain_ratio(y_left, y_right)

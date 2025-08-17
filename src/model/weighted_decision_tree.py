@@ -1,94 +1,116 @@
 import numpy as np
+from custom_tree_classifier import CustomDecisionTreeClassifier
 from utils.voting_split_manager import FNWeightedSplitManager
 
-class TreeNode:
-    def __init__(self, is_leaf, prediction=None, feature=None, threshold=None, left=None, right=None):
-        self.is_leaf = is_leaf
-        self.prediction = prediction
-        self.feature = feature
-        self.threshold = threshold
-        self.left = left
-        self.right = right
+# Import تمام معیارهای تقسیم به صورت توابع معیار آماده
+from criteria.gini import gini_criterion
+from criteria.gain_ratio import gain_ratio_criterion
+from criteria.twoing import twoing_criterion
+from criteria.normalized_gain import normalized_gain_criterion
+from criteria.multi_class_hellinger import multi_class_hellinger
+from criteria.marshall import marsh_criterion
+from criteria.g_statistic import g_statistic_criterion
+from criteria.dkm import dkm_criterion
+from criteria.chi_squared import chi_squared_criterion
+from criteria.bhattacharyya import bhattacharyya_criterion
+from criteria.kolmogorov_smirnov import kolmogorov_smirnov_criterion
 
-class WeightedDecisionTree:
-    def __init__(self, criteria_list, max_depth=3, min_samples_split=5, positive_label=1, epsilon=1e-5):
-        self.criteria_list = criteria_list
-        self.max_depth = max_depth
-        self.min_samples_split = min_samples_split
+
+
+class WeightedDecisionTreeModel:
+    """
+    مدل درخت تصمیم با استفاده از رای‌گیری وزنی بین چندین معیار تقسیم
+    """
+
+    def __init__(self, criteria_funcs_weights, positive_label=1):
+        """
+        پارامترها:
+        -----------
+        criteria_funcs_weights: لیست تاپل (نام معیار, تابع معیار, وزن)
+        positive_label: مقدار کلاس مثبت برای محاسبه FN
+        """
+        self.criteria = [(name, func) for name, func, w in criteria_funcs_weights]
+        self.weights_dict = {name: w for name, func, w in criteria_funcs_weights}
         self.positive_label = positive_label
-        self.epsilon = epsilon
-        self.root = None
+
+        # ساخت آبجکت مدیر رای‌گیری وزنی FN
+        self.split_manager = FNWeightedSplitManager(
+            criteria_list=[CriterionWrapper(name, func) for name, func in self.criteria],
+            positive_label=positive_label
+        )
+
+        # این مدل از CustomDecisionTreeClassifier به عنوان پایه استفاده می‌کند
+        self.model = CustomDecisionTreeClassifier(custom_metric=self.weighted_voting_criterion)
+
+    def weighted_voting_criterion(self, y_left, y_right):
+        """
+        تابع امتیازگیری رای‌گیری وزنی برای custom-tree-classifier
+        """
+        score_list = []
+        fn_list = []
+
+        for name, func in self.criteria:
+            score = func(y_left, y_right)
+            score_list.append(score)
+
+            # FN در این تابع باید از برچسب‌های واقعی و پیش‌بینی جدا باشد.
+            # چون در اینجا پیش‌بینی هنوز نداریم، می‌گذاریم فرض FN=0
+            # یا می‌شود مقدار FN را خارج از این تابع با داده‌های پیش‌بینی واقعی تعیین کرد.
+            fn_list.append(0)
+
+        weights = np.array([self.weights_dict[name] for name, _ in self.criteria])
+        weights = weights / weights.sum()
+
+        weighted_score = float(np.dot(score_list, weights))
+        return weighted_score
 
     def fit(self, X, y):
-        self.n_classes_ = len(np.unique(y))
-        self.root = self._build_tree(X, y, depth=0)
-
-    def _build_tree(self, X, y, depth):
-        # شرط توقف
-        if (depth >= self.max_depth
-            or len(np.unique(y)) == 1
-            or X.shape[0] < self.min_samples_split):
-            # برگ
-            values, counts = np.unique(y, return_counts=True)
-            prediction = values[np.argmax(counts)]
-            return TreeNode(is_leaf=True, prediction=prediction)
-
-        # ساخت splitها: لیست (feature_idx, threshold, y_left, y_right)
-        splits = []
-        for feature in range(X.shape[1]):
-            values = np.unique(X[:, feature])
-            for i in range(1, len(values)):
-                thresh = (values[i-1] + values[i]) / 2
-                mask_left = X[:, feature] <= thresh
-                mask_right = X[:, feature] > thresh
-                if np.sum(mask_left) == 0 or np.sum(mask_right) == 0:
-                    continue
-                y_left = y[mask_left]
-                y_right = y[mask_right]
-                splits.append((feature, thresh, y_left, y_right))
-
-        if not splits:
-            # اگر split معتبری نبود، گره برگ
-            values, counts = np.unique(y, return_counts=True)
-            prediction = values[np.argmax(counts)]
-            return TreeNode(is_leaf=True, prediction=prediction)
-
-        # رأی‌گیری وزنی بین همه معیارها (FNWeightedSplitManager)
-        manager = FNWeightedSplitManager(
-            self.criteria_list,
-            positive_label=self.positive_label,
-            epsilon=self.epsilon
-        )
-        best_split = manager.evaluate_all_splits(splits)
-
-        if best_split is None:
-            # اگر split انتخاب نشد، گره برگ
-            values, counts = np.unique(y, return_counts=True)
-            prediction = values[np.argmax(counts)]
-            return TreeNode(is_leaf=True, prediction=prediction)
-
-        feature = best_split['feature']
-        threshold = best_split['threshold']
-        mask_left = X[:, feature] <= threshold
-        mask_right = X[:, feature] > threshold
-        left_child = self._build_tree(X[mask_left], y[mask_left], depth+1)
-        right_child = self._build_tree(X[mask_right], y[mask_right], depth+1)
-        return TreeNode(
-            is_leaf=False,
-            feature=feature,
-            threshold=threshold,
-            left=left_child,
-            right=right_child
-        )
-
-    def predict_single(self, x, node):
-        if node.is_leaf:
-            return node.prediction
-        if x[node.feature] <= node.threshold:
-            return self.predict_single(x, node.left)
-        else:
-            return self.predict_single(x, node.right)
+        """
+        آموزش مدل درخت تصمیم با رای‌گیری وزنی معیارها
+        """
+        self.model.fit(X, y)
 
     def predict(self, X):
-        X = np.array(X)
-        return np.array([self.predict_single(x, self.root) for x in X])
+        """
+        پیش‌بینی برچسب‌ها با مدل آموزش دیده
+        """
+        return self.model.predict(X)
+
+
+class CriterionWrapper:
+    """
+    کلاس کمکی برای سازگار کردن توابع معیار با کلاس مورد نیاز FNWeightedSplitManager
+    """
+    def __init__(self, name, func):
+        self.name = name
+        self.func = func
+
+    def calculate_score(self, y_left, y_right):
+        return self.func(y_left, y_right)
+
+
+# نمونه استفاده ساده
+if __name__ == "__main__":
+    # لیست معیارها به همراه وزن دلخواه (جمع وزن‌ها مساوی 1 یا نرمال می‌شود)
+    criteria_with_weights = [
+        ("gini", gini_criterion, 0.15),
+        ("gain_ratio", gain_ratio_criterion, 0.15),
+        ("twoing", twoing_criterion, 0.10),
+        ("normalized_gain", normalized_gain_criterion, 0.10),
+        ("multi_class_hellinger", multi_class_hellinger, 0.10),
+        ("marshall", marsh_criterion, 0.05),
+        ("g_statistic", g_statistic_criterion, 0.05),
+        ("dkm", dkm_criterion, 0.10),
+        ("chi_squared", chi_squared_criterion, 0.05),
+        ("bhattacharyya", bhattacharyya_criterion, 0.10),
+        ("kolmogorov_smirnov", kolmogorov_smirnov_criterion, 0.05),
+    ]
+
+    # آماده‌سازی مدل
+    model = WeightedDecisionTreeModel(criteria_with_weights, positive_label=1)
+
+    # فرضی: X_train و y_train داده‌های آموزشی مدل
+    # model.fit(X_train, y_train)
+    # y_pred = model.predict(X_test)
+
+    print("مدل WeightedDecisionTree آماده است برای آموزش و پیش‌بینی.")

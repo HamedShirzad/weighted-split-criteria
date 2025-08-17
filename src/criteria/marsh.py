@@ -1,5 +1,4 @@
 import numpy as np
-from .base import BaseCriterion
 
 def calculate_g(a, b, c, d, A, B, C, D, N):
     """
@@ -35,7 +34,6 @@ def marsh_criterion(y_left, y_right):
     y_left = np.asarray(y_left)
     y_right = np.asarray(y_right)
 
-    # شمارش فراوانی‌های مشاهده‌شده
     a = np.sum((y_left == 0))
     b = np.sum((y_left == 1))
     c = np.sum((y_right == 0))
@@ -46,18 +44,3 @@ def marsh_criterion(y_left, y_right):
         return 0.0
 
     return calculate_g(a, b, c, d, A, B, C, D, N)
-
-class MarshallCriterion(BaseCriterion):
-    """
-    کلاس معیار Marshall برای استفاده در درخت‌های تصمیم
-    """
-    def __init__(self):
-        super().__init__()
-        self.name = "marshall"
-
-    def calculate_score(self, y_left, y_right):
-        y_left, y_right = self.validate_input(y_left, y_right)
-        return marsh_criterion(y_left, y_right)
-
-    def get_description(self):
-        return "Marshall Criterion: تقسیم‌بندی منظم با کنترل overfitting و دانش پیشین"
