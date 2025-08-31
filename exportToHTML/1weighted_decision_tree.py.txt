@@ -1,0 +1,348 @@
+weighted_decision_tree.py
+
+1    import numpy as np
+2    #from custom_tree_classifier.models.decision_tree import CustomDecisionTreeClassifier
+3    from custom_tree_classifier.metrics.metric_base import MetricBase
+4    # از آنجایی که دیگر از این کلاس استفاده نمی‌کنیم، می‌توان آن را حذف کرد یا کامنت کرد
+5    # from utils.voting_split_manager import FNWeightedSplitManager
+6    
+7    # Import معیارها (بدون تغییر)
+8    #from criteria.gini import gini_criterion
+9    from criteria.qg import gain_ratio_criterion
+10   from criteria.twoing import twoing_criterion
+11   from criteria.ng import normalized_gain_criterion
+12   from criteria.mch import multi_class_hellinger
+13   from criteria.marsh import marsh_criterion
+14   from criteria.gs import g_statistic_criterion
+15   from criteria.dkm import dkm_criterion
+16   from criteria.cs import chi_squared_criterion
+17   from criteria.bhy import bhattacharyya_criterion
+18   from criteria.ks import kolmogorov_smirnov_criterion
+19   
+20   # ================================================================
+21   # کلاس ۱: SingleCriterionMetric (بدون تغییر و ضروری)
+22   # این کلاس برای تست ایزوله هر معیار در فرآیند محاسبه وزن لازم است.
+23   # ================================================================
+24   class SingleCriterionMetric(MetricBase):
+25       """ 
+26       یک کلاس کمکی برای بسته‌بندی یک معیار منفرد در قالبی که 
+27       کتابخانه CustomDecisionTreeClassifier آن را به عنوان متریک می‌پذیرد. 
+28       این کلاس برای ساخت درختان موقت در فرآیند محاسبه FN ضروری است. 
+29       """
+30       def __init__(self, name, func):
+31           super().__init__()
+32           self.name = name
+33           self.func = func
+34   
+35       def compute_metric(self, metric_data: np.ndarray) -> float:
+36           """محاسبه ناخالصی برای یک گره کامل."""
+37           try:
+38               y = metric_data[:, 0] if metric_data.ndim > 1 else metric_data
+39               # فرض بر این است که تابع معیار با یک آرایه خالی برای y_left کار می‌کند
+40               return float(self.func(np.array([]), y))
+41           except Exception:
+42               return 0.0
+43   
+44       def compute_delta(self, split, metric_data):
+45           """محاسبه Information Gain برای یک تقسیم."""
+46           try:
+47               y = metric_data[:, 0] if metric_data.ndim > 1 else metric_data
+48               
+49               if split.dtype == bool:
+50                   y_left, y_right = y[split], y[~split]
+51               else:
+52                   mask = np.ones(len(y), dtype=bool)
+53                   mask[split] = False
+54                   y_left, y_right = y[split], y[mask]
+55   
+56               # محاسبه information gain (کاهش ناخالصی)
+57               parent_impurity = self.func(np.array([]), y)
+58               p_left = len(y_left) / len(y) if len(y) > 0 else 0
+59               p_right = len(y_right) / len(y) if len(y) > 0 else 0
+60               
+61               impurity_left = self.func(np.array([]), y_left) if len(y_left) > 0 else 0
+62               impurity_right = self.func(np.array([]), y_right) if len(y_right) > 0 else 0
+63               
+64               weighted_child_impurity = (p_left * impurity_left) + (p_right * impurity_right)
+65               
+66               return parent_impurity - weighted_child_impurity
+67           except Exception:
+68               return 0.0
+69   
+70   # ================================================================
+71   # کلاس ۲: WeightedVotingMetric (با متد evaluate اصلاح شده)
+72   # این مغز متفکر مدل شماست.
+73   # ================================================================
+74   class WeightedVotingMetric(MetricBase):
+75       """ 
+76       یک متریک سفارشی که از ترکیب وزن‌دار چندین معیار برای ارزیابی تقسیم‌ها استفاده می‌کند. 
+77       وزن‌ها به صورت پویا در هر گره بر اساس عملکرد هر معیار در کاهش False Negatives محاسبه می‌شوند. 
+78       """
+79       def __init__(self, criteria, a):
+80           super().__init__()
+81           self.criteria = criteria  # لیستی از (نام، تابع) معیارها
+82           self.a = a  # کل دیتاست ویژگی‌ها (X)
+83           self.weights_dict = {}  # دیکشنری برای نگهداری وزن‌های محاسبه شده در هر گره
+84           self._fn_cache = {}  # کش برای جلوگیری از محاسبات تکراری FN
+85   
+86       def estimate_fn_for_criterion(self, name, x_data, y_node):
+87           """برای یک معیار مشخص، با ساختن یک درخت موقت، مقدار FN را تخمین می‌زند."""
+88           from custom_tree_classifier.models.decision_tree import CustomDecisionTreeClassifier
+89           cache_key = f"{name}_{len(x_data)}_{hash(y_node.tobytes())}_{hash(x_data.tobytes())}"
+90           if cache_key in self._fn_cache:
+91               return self._fn_cache[cache_key]
+92   
+93           if x_data.shape[0] != y_node.shape[0]:
+94               return np.inf # در صورت عدم تطابق داده، یک پنالتی بزرگ در نظر می‌گیریم
+95   
+96           try:
+97               criterion_func = dict(self.criteria)[name]
+98               metric_obj = SingleCriterionMetric(name, criterion_func)
+99               
+100              model = CustomDecisionTreeClassifier(max_depth=3, metric=metric_obj)
+101              metric_data = y_node.reshape(-1, 1)
+102              model.fit(x_data, y_node, metric_data)
+103              
+104              probas = model.predict_proba(x_data)
+105              preds = (probas[:, 1] > 0.5).astype(int) if probas.shape[1] > 1 else np.zeros_like(y_node)
+106              
+107              fn_count = np.sum((y_node == 1) & (preds == 0))
+108              self._fn_cache[cache_key] = fn_count
+109              return fn_count
+110          except Exception as e:
+111              print(f"[ERROR] در محاسبه FN برای {name}: {e}")
+112              return np.inf
+113  
+114      def update_weights_dynamic(self, x_data, y_node):
+115          """ 
+116          FNها را برای تمام معیارها محاسبه و دیکشنری وزن‌ها را برای گره فعلی به‌روز می‌کند. 
+117          این متد توسط `fit` از `CustomDecisionTreeClassifier` فراخوانی می‌شود. 
+118          """
+119          if len(x_data) < 2:
+120              return self.weights_dict # اگر داده کافی نیست، از وزن‌های قبلی استفاده کن
+121  
+122          fn_values = [self.estimate_fn_for_criterion(name, x_data, y_node) for name, _ in self.criteria]
+123          print(f"  FNs calculated: {dict(zip([c[0] for c in self.criteria], fn_values))}")
+124  
+125          # تبدیل FN به وزن (معکوس FN) و نرمال‌سازی
+126          fn_values = np.array(fn_values, dtype=float)
+127          fn_values[fn_values < 1e-9] = 1e-9 # جلوگیری از تقسیم بر صفر
+128  
+129          weights = 1.0 / fn_values
+130          total_weight = np.sum(weights)
+131  
+132          if total_weight > 0:
+133              normalized_weights = weights / total_weight
+134          else:
+135              # در صورت بروز خطا برای همه معیارها، وزن مساوی در نظر بگیر
+136              num_criteria = len(self.criteria)
+137              normalized_weights = np.full(num_criteria, 1.0 / num_criteria)
+138              
+139          self.weights_dict = {name: weight for (name, _), weight in zip(self.criteria, normalized_weights)}
+140          print(f"  New weights set: {self.weights_dict}")
+141          return self.weights_dict
+142  
+143      def evaluate(self, y_left, y_right, split_info=None):
+144          """ 
+145          🔥 متد اصلاح شده 🔥 
+146          امتیاز وزنی یک تقسیم را با استفاده از وزن‌های از پیش محاسبه شده، محاسبه می‌کند. 
+147          این متد دیگر خودش وزن‌ها را آپدیت نمی‌کند. 
+148          """
+149          if len(y_left) == 0 or len(y_right) == 0:
+150              return 0.0
+151  
+152          # اگر به هر دلیلی وزن‌ها محاسبه نشده باشند (نباید اتفاق بیفتد)، از وزن مساوی استفاده کن
+153          if not self.weights_dict:
+154              print("[WARNING] `evaluate` فراخوانی شد در حالی که وزن‌ها تنظیم نشده بودند. استفاده از وزن مساوی.")
+155              self.weights_dict = {name: 1.0 / len(self.criteria) for name, _ in self.criteria}
+156          
+157          # ۱. محاسبه information gain برای هر معیار
+158          scores = []
+159          y_parent = np.concatenate((y_left, y_right))
+160          for name, func in self.criteria:
+161              try:
+162                  parent_impurity = func(np.array([]), y_parent)
+163                  p_left = len(y_left) / len(y_parent)
+164                  child_impurity = (p_left * func(np.array([]), y_left)) + \
+165                                   ((1 - p_left) * func(np.array([]), y_right))
+166                  gain = parent_impurity - child_impurity
+167                  scores.append(gain)
+168              except Exception:
+169                  scores.append(0.0)
+170  
+171          # ۲. خواندن وزن‌ها از دیکشنری
+172          weights = np.array([self.weights_dict.get(name, 0.0) for name, _ in self.criteria])
+173  
+174          # ۳. محاسبه امتیاز نهایی (میانگین وزنی از information gain ها)
+175          if weights.sum() > 0:
+176              weighted_score = np.dot(scores, weights)
+177          else:
+178              # این حالت فقط در صورت بروز خطای جدی رخ می‌دهد
+179              weighted_score = np.mean(scores) if scores else 0.0
+180              
+181          return float(weighted_score)
+182  
+183      def compute_metric(self, metric_data: np.ndarray) -> float:
+184          """محاسبه ناخالصی کلی یک گره (میانگین از دید همه معیارها)."""
+185          if len(metric_data) == 0:
+186              return 0.0
+187          y = metric_data[:, 0] if metric_data.ndim > 1 else metric_data
+188          total_impurity = sum(func(np.array([]), y) for _, func in self.criteria)
+189          return total_impurity / len(self.criteria) if self.criteria else 0.0
+190  
+191      def compute_delta(self, split: np.ndarray, metric_data: np.ndarray) -> float:
+192          """این متد به درستی `evaluate` را برای محاسبه gain صدا می‌زند."""
+193          y = metric_data[:, 0] if metric_data.ndim > 1 else metric_data
+194          if split.dtype == bool:
+195              y_left, y_right = y[split], y[~split]
+196          else:
+197              mask = np.ones(len(y), dtype=bool)
+198              mask[split] = False
+199              y_left, y_right = y[split], y[mask]
+200              
+201          return self.evaluate(y_left, y_right)
+202  
+203  # ================================================================
+204  # کلاس ۳: CriterionWrapper (بدون تغییر)
+205  # ================================================================
+206  class CriterionWrapper:
+207      # این کلاس اگر در جای دیگری استفاده نمی‌شود، می‌تواند حذف شود.
+208      # در این معماری جدید، نقش مستقیمی ندارد.
+209      def __init__(self, name, func):
+210          self.name = name
+211          self.func = func
+212          
+213      def calculate_score(self, y_left, y_right):
+214          try:
+215              return self.func(y_left, y_right)
+216          except Exception:
+217              return 0.0
+218  
+219  # ================================================================
+220  # کلاس ۴: WeightedDecisionTreeModel (بدون تغییر)
+221  # این کلاس ارکستراتور اصلی است و نیازی به تغییر ندارد.
+222  # ================================================================
+223  class WeightedDecisionTreeModel:
+224  # در فایل src/model/weighted_decision_tree.py
+225  # در کلاس WeightedDecisionTreeModel
+226  
+227      def __init__(self, criteria_funcs_weights=None, positive_label=1, max_depth=5, a=None):
+228          if criteria_funcs_weights is None:
+229              criteria_funcs_weights = [
+230                  #("gini", gini_criterion), ("gain_ratio", gain_ratio_criterion),
+231                  ("twoing", twoing_criterion), ("normalized_gain", normalized_gain_criterion),
+232                  ("multi_class_hellinger", multi_class_hellinger), ("marshall", marsh_criterion),
+233                  ("g_statistic", g_statistic_criterion), ("dkm", dkm_criterion),
+234                  ("chi_squared", chi_squared_criterion), ("bhattacharyya", bhattacharyya_criterion),
+235                  ("kolmogorov_smirnov", kolmogorov_smirnov_criterion),
+236              ]
+237          self.criteria = criteria_funcs_weights
+238          self.positive_label = positive_label
+239          
+240          # 🔥 خط اصلاح شده و بسیار مهم که فراموش شده بود
+241          self.max_depth = max_depth
+242          
+243          if a is None:
+244              raise ValueError("a باید داده ویژگی‌های کامل را به مدل بدهید.")
+245          
+246          self.a = np.array(a.values) if hasattr(a, "values") else np.array(a)
+247          
+248          self.metric = WeightedVotingMetric(self.criteria, self.a)
+249          self.model = None
+250  
+251  
+252      def compute_initial_weights(self, X, y):
+253          from custom_tree_classifier.models.decision_tree import CustomDecisionTreeClassifier
+254  
+255          """وزن‌های اولیه را برای گره ریشه محاسبه می‌کند."""
+256          print("[INIT] شروع محاسبه وزن‌های اولیه برای گره ریشه...")
+257          # از همان منطق `update_weights_dynamic` استفاده می‌کنیم
+258          initial_weights = self.metric.update_weights_dynamic(X, y)
+259          self.metric.weights_dict = initial_weights
+260          print(f"وزن‌های اولیه تنظیم شد: {initial_weights}")
+261  
+262      # در کلاس WeightedDecisionTreeModel
+263      
+264  # در فایل src/model/weighted_decision_tree.py
+265  
+266      def fit(self, x, y):
+267          """ 
+268          مدل را با استفاده از داده‌های ورودی آموزش می‌دهد. 
+269          """
+270          # 🔥 اصلاحیه ۱: ایمپورت محلی برای شکستن چرخه وابستگی
+271          from custom_tree_classifier.models.decision_tree import CustomDecisionTreeClassifier
+272  
+273          # 🔥 اصلاحیه ۲ (بسیار مهم): ساخت مدل در لحظه نیاز
+274          # اگر مدل ساخته نشده (None است)، آن را بساز
+275          if self.model is None:
+276              # در متد __init__ کلاس WeightedDecisionTreeModel
+277              #self.model = CustomDecisionTreeClassifier() # درست: یک نمونه از کلاس ساخته‌اید
+278  
+279              self.model = CustomDecisionTreeClassifier(
+280                  max_depth=self.max_depth,
+281                  metric=self.metric
+282              )
+283          
+284          # مرحله ۱: آماده‌سازی داده‌ها (بدون تغییر)
+285          X_fit = x.values if hasattr(x, "values") else x
+286          y_fit = y.values if hasattr(y, "values") else y
+287          
+288          print(f"شروع آموزش مدل - شکل داده: x={X_fit.shape}, y={y_fit.shape}")
+289          
+290          # مرحله ۲: محاسبه و تنظیم وزن‌های اولیه (بدون تغییر)
+291          self.compute_initial_weights(X_fit, y_fit)
+292          
+293          # مرحله ۳: آماده‌سازی داده متریک (بدون تغییر)
+294          metric_data = y_fit.reshape(-1, 1)
+295  
+296   
+297  
+298          import custom_tree_classifier.models.decision_tree as dt
+299  
+300          print("Path of the loaded module:", dt.__file__)
+301  
+302  
+303          # مرحله ۴: فراخوانی fit اصلی کتابخانه (حالا بدون خطا اجرا می‌شود)
+304          self.model.fit(X_fit, y_fit, metric_data)
+305  
+306  
+307  
+308          print("آموزش تکمیل شد!")
+309  
+310  
+311      def predict(self, x):
+312          X_pred = x.values if hasattr(x, "values") else x
+313          probas = self.model.predict_proba(X_pred)
+314          if probas.shape[1] > 1:
+315              return np.argmax(probas, axis=1)
+316          else:
+317              return (probas[:, 0] > 0.5).astype(int)
+318  
+319      def predict_proba(self, x):
+320          X_pred = x.values if hasattr(x, "values") else x
+321          return self.model.predict_proba(X_pred)
+322  
+323  # ================================================================
+324  # بخش اجرایی (بدون تغییر)
+325  # ================================================================
+326  if __name__ == "__main__":
+327      from sklearn.datasets import make_classification
+328      
+329      # ساخت داده نمونه
+330      X_data, y_data = make_classification(n_samples=100, n_features=10, n_informative=5, n_redundant=0, n_classes=2, random_state=42)
+331      
+332      # ساخت و آموزش مدل
+333      model = WeightedDecisionTreeModel(a=X_data, max_depth=5)
+334      model.fit(X_data, y_data)
+335      
+336      # پیش‌بینی
+337      predictions = model.predict(X_data)
+338      probabilities = model.predict_proba(X_data)
+339      
+340      print("\n--- نتایج نهایی ---")
+341      print(f"تعداد پیش‌بینی‌ها: {len(predictions)}")
+342      print(f"نمونه پیش‌بینی‌ها: {predictions[:10]}")
+343      print(f"نمونه احتمالات: \n{probabilities[:5]}")
+344      print("\nمدل با موفقیت اجرا شد!")
+345  
+

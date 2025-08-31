@@ -27,7 +27,8 @@ def chi_squared_statistic(y_left, y_right):
     expected = calculate_expected_frequencies(row_totals, col_totals, grand_total)
 
     mask = expected > 0
-    chi2_stat = np.sum(((observed - expected)**2 / expected)[mask])
+    expected_safe = np.where(expected == 0, 1e-10, expected)
+    chi2_stat = np.sum(((observed - expected)**2 / expected_safe)[mask])
 
     return chi2_stat
 

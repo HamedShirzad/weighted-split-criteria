@@ -1,5 +1,5 @@
 import numpy as np
-from src.utils.fn_metric import false_negative
+from utils.fn_metric import false_negative
 
 
 class FNWeightedSplitManager:
